@@ -8,7 +8,7 @@ import numpy as np
 import yaml
 from tensorboardX import SummaryWriter
 
-from tinygrad import Tensor, nn
+from tinygrad import Tensor, nn, dtypes
 
 
 def symlog(x):
@@ -19,15 +19,29 @@ def symexp(x):
     return Tensor.sign(x) * (Tensor.exp(Tensor.abs(x)) - 1.0)
 
 
-def cumprod(x: Tensor, axis):
+def cumprod(x: Tensor, axis: int = 0):
     dtype = x.dtype
     # why implement cumprod when you can use math instead?
     return x.log().cumsum(axis).exp().cast(dtype)
 
 
-def quantile(input, q):
-    # TODO: optimize this to not use numpy
-    return Tensor(np.quantile(input.numpy(), q.numpy()), dtype=input.dtype)
+def sort(arr: Tensor):
+    assert arr.ndim == 1, "Cannot sort multidimensional array"
+    # O(n) insertion sort, but works with JIT; find a better way
+    temp = []
+    arrmax = arr.max()
+    for _ in range(arr.numel()):
+        idx = arr.argmin().realize()
+        temp.append(arr[idx])
+        arr = Tensor.where(arr == arr[idx], arrmax, arr).realize()
+    return Tensor.stack(temp)
+
+
+def quantile(inp: Tensor, q: Tensor):
+    inp_sorted = sort(inp)
+    q = q * (inp_sorted.shape[0] - 1)
+    i, g = q.floor().cast(dtypes.int32), q - q.floor()
+    return inp_sorted[i] * (1 - g) + inp_sorted[i + 1] * g
 
 
 def static_scan_for_lambda_return(fn, inputs, start):

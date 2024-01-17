@@ -15,7 +15,7 @@ class RewardEMA:
         self.range = Tensor([0.05, 0.95])
 
     def __call__(self, x, ema_vals):
-        flat_x = Tensor.flatten(x.detach())
+        flat_x = x.detach().flatten()
         x_quantile = utils.quantile(input=flat_x, q=self.range)
         # this should be in-place operation
         ema_vals = self.alpha * x_quantile + (1 - self.alpha) * ema_vals
@@ -245,7 +245,9 @@ class ActorCritic:
         actor_ent = actor_critic.actor(imag_feat).entropy()
         # this target is not scaled by ema or sym_log.
         target, weights, base = actor_critic._compute_target(imag_feat, imag_state, reward)
-        actor_loss, ema_vals, mets = actor_critic._compute_actor_loss(imag_feat, imag_action, target.detach(), weights.detach(), base.detach(), ema_vals)
+        actor_loss, ema_vals, mets = actor_critic._compute_actor_loss(
+            imag_feat, imag_action, target.detach(), weights.detach(), base.detach(), ema_vals
+        )
         actor_loss = actor_loss - actor_critic._config.actor["entropy"] * actor_ent[:-1, ..., None]
         actor_loss = Tensor.mean(actor_loss)
         metrics.update(mets)
@@ -463,9 +465,10 @@ def random_agent(config, act_space):
             ),
             1,
         )
+
     def random_policy(o, d, s):
         action = random_actor.sample()
         logprob = random_actor.log_prob(action)
         return {"action": action, "logprob": logprob}, None
-    
+
     return random_policy

@@ -14,9 +14,10 @@ Device.DEFAULT = "TORCH"
 class TestRewardEMA(unittest.TestCase):
     def test_reward_ema(self):
         reward_ema = models.RewardEMA()
-        mean, std = reward_ema(Tensor([1.0, 2.0, 3.0]))
+        ema_vals = Tensor([0.0, 1.0])
+        mean, std, ema_vals = reward_ema(Tensor([1.0, 2.0, 3.0]), ema_vals)
         print(mean.item(), std.item())
-        mean, std = reward_ema(Tensor([1.0, 2.0, 3.0]))
+        mean, std, ema_vals = reward_ema(Tensor([1.0, 2.0, 3.0]), ema_vals)
         print(mean.item(), std.item())
 
 
@@ -121,7 +122,7 @@ class TestActorCritic(unittest.TestCase):
         self.assertEqual(actions.numpy().shape, (H, B * T, world_model.num_actions))
         rewards = Tensor.uniform((H, B * T))
         target, weights, base = actor_critic._compute_target(feats, states, rewards)
-        actor_loss, metrics = actor_critic._compute_actor_loss(feats, actions, target, weights, base)
+        actor_loss, _, metrics = actor_critic._compute_actor_loss(feats, actions, target, weights, base, actor_critic.ema_vals)
         actor_loss.mean().backward()  # checks backward pass
         metrics["actor_loss"] = actor_loss.mean()
         metrics = {k: v.item() for k, v in metrics.items()}
