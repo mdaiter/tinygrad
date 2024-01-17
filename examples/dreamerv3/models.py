@@ -13,16 +13,15 @@ class RewardEMA:
     def __init__(self, alpha=1e-2):
         self.alpha = alpha
         self.range = Tensor([0.05, 0.95])
-        self.ema_vals = Tensor([0.0, 1.0])
 
-    def __call__(self, x):
+    def __call__(self, x, ema_vals):
         flat_x = Tensor.flatten(x.detach())
         x_quantile = utils.quantile(input=flat_x, q=self.range)
         # this should be in-place operation
-        self.ema_vals = self.alpha * x_quantile + (1 - self.alpha) * self.ema_vals
-        scale = Tensor.maximum(self.ema_vals[1] - self.ema_vals[0], 1.0)
-        offset = self.ema_vals[0]
-        return offset.detach(), scale.detach()
+        ema_vals = self.alpha * x_quantile + (1 - self.alpha) * ema_vals
+        scale = Tensor.maximum(ema_vals[1] - ema_vals[0], 1.0)
+        offset = ema_vals[0]
+        return offset.detach(), scale.detach(), ema_vals.detach()
 
 
 class WorldModel:
@@ -237,15 +236,16 @@ class ActorCritic:
         )
         if self._config.reward_EMA:
             self.reward_ema = RewardEMA()
+            self.ema_vals = Tensor([0.0, 1.0])
 
     @staticmethod
     @TinyJit
-    def _train(actor_critic: "ActorCritic", imag_feat, imag_action, reward, **imag_state):
+    def _train(actor_critic: "ActorCritic", imag_feat, imag_action, reward, ema_vals, **imag_state):
         metrics = {}
         actor_ent = actor_critic.actor(imag_feat).entropy()
         # this target is not scaled by ema or sym_log.
         target, weights, base = actor_critic._compute_target(imag_feat, imag_state, reward)
-        actor_loss, mets = actor_critic._compute_actor_loss(imag_feat, imag_action, target.detach(), weights.detach(), base.detach())
+        actor_loss, ema_vals, mets = actor_critic._compute_actor_loss(imag_feat, imag_action, target.detach(), weights.detach(), base.detach(), ema_vals)
         actor_loss = actor_loss - actor_critic._config.actor["entropy"] * actor_ent[:-1, ..., None]
         actor_loss = Tensor.mean(actor_loss)
         metrics.update(mets)
@@ -282,7 +282,7 @@ class ActorCritic:
         metrics.update(actor_critic._value_opt.step())
 
         metrics = {k: v.realize() for k, v in metrics.items()}
-        return imag_feat, imag_state, imag_action, weights, metrics
+        return weights.realize(), ema_vals.realize(), metrics
 
     @staticmethod
     @TinyJit
@@ -324,19 +324,19 @@ class ActorCritic:
         weights = utils.cumprod(Tensor.cat(Tensor.ones_like(discount[:1]), discount[:-1], dim=0), 0).detach()
         return target, weights, value[:-1]
 
-    def _compute_actor_loss(self, imag_feat, imag_action, target, weights, base):
+    def _compute_actor_loss(self, imag_feat, imag_action, target, weights, base, ema_vals):
         metrics = {}
         policy = self.actor(imag_feat)
         # Q-val for actor is not transformed using symlog
         target = Tensor.stack(target, dim=1)
         if self._config.reward_EMA:
-            offset, scale = self.reward_ema(target)
+            offset, scale, ema_vals = self.reward_ema(target, ema_vals)
             normed_target = (target - offset) / scale
             normed_base = (base - offset) / scale
             adv = normed_target - normed_base
             metrics.update(utils.tensorstats(normed_target, "normed_target"))
-            metrics["EMA_005"] = self.reward_ema.ema_vals[0]
-            metrics["EMA_095"] = self.reward_ema.ema_vals[1]
+            metrics["EMA_005"] = ema_vals[0]
+            metrics["EMA_095"] = ema_vals[1]
 
         if self._config.imag_gradient == "dynamics":
             actor_target = adv
@@ -350,7 +350,7 @@ class ActorCritic:
         else:
             raise NotImplementedError(self._config.imag_gradient)
         actor_loss = -weights[:-1] * actor_target
-        return actor_loss, metrics
+        return actor_loss, ema_vals, metrics
 
     def _update_slow_target(self):
         if self._config.critic["slow_target"]:
@@ -368,7 +368,8 @@ class ActorCritic:
         imag_state = {k: v.detach().contiguous().realize() for k, v in imag_state.items()}
         imag_action = imag_action.contiguous().realize()
         imag_reward = objective(imag_feat, imag_state, imag_action).detach().contiguous().realize()
-        return self._train(self, imag_feat, imag_action, imag_reward, **imag_state)
+        weights, self.ema_vals, metrics = self._train(self, imag_feat, imag_action, imag_reward, self.ema_vals, **imag_state)
+        return imag_feat, imag_state, imag_action, weights, metrics
 
     def actor_parameters(self):
         return nn.state.get_parameters(self.actor)
