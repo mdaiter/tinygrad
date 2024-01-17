@@ -88,7 +88,7 @@ class TestWorldModel(unittest.TestCase):
             print()
         self.assertEqual(post["stoch"].numpy().shape, (B, T, 24, 24))
         self.assertEqual(post["deter"].numpy().shape, (B, T, 256))
-        self.assertEqual(context["embed"].numpy().shape, (B, T, 4096))
+        self.assertEqual(context["embed"].numpy().shape, (B, T, 842))
         self.assertEqual(context["feat"].numpy().shape, (B, T, 842))
 
 
