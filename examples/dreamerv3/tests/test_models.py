@@ -86,10 +86,10 @@ class TestWorldModel(unittest.TestCase):
             print(metrics)
             print(f"world model train time {i}: {time.time() - start_time}")
             print()
-        self.assertEqual(post["stoch"].numpy().shape, (B, T, 32, 32))
-        self.assertEqual(post["deter"].numpy().shape, (B, T, 512))
+        self.assertEqual(post["stoch"].numpy().shape, (B, T, 24, 24))
+        self.assertEqual(post["deter"].numpy().shape, (B, T, 256))
         self.assertEqual(context["embed"].numpy().shape, (B, T, 4096))
-        self.assertEqual(context["feat"].numpy().shape, (B, T, 1536))
+        self.assertEqual(context["feat"].numpy().shape, (B, T, 842))
 
 
 class TestActorCritic(unittest.TestCase):
@@ -115,9 +115,9 @@ class TestActorCritic(unittest.TestCase):
         start = {k: v.reshape((B, T) + v.shape[1:]) for k, v in start.items()}
         feats, states, actions = actor_critic._imagine(actor_critic, **start)
         actor_critic._imagine.reset()
-        self.assertEqual(feats.numpy().shape, (H, B * T, 1536))
-        self.assertEqual(states["stoch"].numpy().shape, (H, B * T, 32, 32))
-        self.assertEqual(states["deter"].numpy().shape, (H, B * T, 512))
+        self.assertEqual(feats.numpy().shape, (H, B * T, 842))
+        self.assertEqual(states["stoch"].numpy().shape, (H, B * T, 24, 24))
+        self.assertEqual(states["deter"].numpy().shape, (H, B * T, 256))
         self.assertEqual(actions.numpy().shape, (H, B * T, world_model.num_actions))
         rewards = Tensor.uniform((H, B * T))
         target, weights, base = actor_critic._compute_target(feats, states, rewards)

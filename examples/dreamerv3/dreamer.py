@@ -33,16 +33,16 @@ class Dreamer:
     def __call__(self, obs, done, state=None, training=True):
         if training:
             num_steps = self._config.pretrain if not self.pretrained else self._num_train_steps
-            self.pretrained = True
             for _ in range(num_steps):
                 self._train(next(self._dataset))
                 self._update_count += 1
                 self._metrics["update_count"] = self._update_count
-            if self._step % self._log_every == 0:
+            if not self.pretrained or self._step % self._log_every == 0:
                 for name, values in self._metrics.items():
                     self._logger.scalar(name, float(np.mean(values)))
                     self._metrics[name] = []
                 self._logger.write(fps=True)
+            self.pretrained = True
             self._step += len(done)
             self._logger.step = self._config.action_repeat * self._step
 
