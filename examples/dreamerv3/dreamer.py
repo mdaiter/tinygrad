@@ -18,6 +18,8 @@ class Dreamer:
         self._log_every = config.log_every
         batch_steps = config.batch_size * config.batch_length
         self._num_train_steps = batch_steps // config.train_ratio
+        if self._num_train_steps == 0:
+            raise ValueError(f"Train ratio {config.train_ratio} must be less than batch size {config.batch_size} * batch_length {config.batch_length}s.")
         self._reset_every = config.reset_every
         self._expl_until = config.expl_until
         self.pretrained = False
