@@ -16,7 +16,7 @@ class RewardEMA:
 
     def __call__(self, x, ema_vals):
         flat_x = x.detach().flatten()
-        x_quantile = utils.quantile(input=flat_x, q=self.range)
+        x_quantile = utils.quantile(flat_x, q=self.range)
         # this should be in-place operation
         ema_vals = self.alpha * x_quantile + (1 - self.alpha) * ema_vals
         scale = Tensor.maximum(ema_vals[1] - ema_vals[0], 1.0)
