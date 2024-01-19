@@ -117,7 +117,7 @@ def main():
     train_dataset = make_dataset(train_eps, config)
     eval_dataset = make_dataset(eval_eps, config)
     agent = Dreamer(train_envs[0].observation_space, train_envs[0].action_space, config, logger, train_dataset)
-    print(f"world model parameters: {sum(param.numel() for param in agent.world_model.parameters())}")
+    print(f"world parameters: {sum(param.numel() for param in agent.world_model.parameters())}")
     print(f"actor parameters: {sum(param.numel() for param in agent.actor_critic.actor_parameters())}")
     print(f"value parameters: {sum(param.numel() for param in agent.actor_critic.value_parameters())}")
     if (logdir / "latest.safetensors").exists():

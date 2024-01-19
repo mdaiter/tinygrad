@@ -235,8 +235,11 @@ class ActorCritic:
             "value", self.value_parameters(), config.critic["lr"], config.critic["eps"], config.critic["grad_clip"], config.opt
         )
         if self._config.reward_EMA:
+            raise ValueError("I'm not sure this works yet")
             self.reward_ema = RewardEMA()
             self.ema_vals = Tensor([0.0, 1.0])
+        else:
+            self.ema_vals = None
 
     @staticmethod
     @TinyJit
@@ -284,7 +287,7 @@ class ActorCritic:
         metrics.update(actor_critic._value_opt.step())
 
         metrics = {k: v.realize() for k, v in metrics.items()}
-        return weights.realize(), ema_vals.realize(), metrics
+        return weights.realize(), ema_vals, metrics
 
     @staticmethod
     @TinyJit
@@ -339,6 +342,8 @@ class ActorCritic:
             metrics.update(utils.tensorstats(normed_target, "normed_target"))
             metrics["EMA_005"] = ema_vals[0]
             metrics["EMA_095"] = ema_vals[1]
+        else:
+            ema_vals = None
 
         if self._config.imag_gradient == "dynamics":
             actor_target = adv

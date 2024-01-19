@@ -108,7 +108,7 @@ def simulate(agent, envs, cache, directory, logger, is_eval=False, limit=None, s
         if isinstance(action, dict):
             action = [{k: action[k][i].numpy() for k in action} for i in range(len(envs))]
         else:
-            action = action.numpy()
+            action = [action[i].numpy() for i in range(len(envs))]
         assert len(action) == len(envs)
         # step envs
         results = [e.step(a) for e, a in zip(envs, action)]
