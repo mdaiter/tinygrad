@@ -1,11 +1,12 @@
 from __future__ import annotations
 from collections import defaultdict
-from typing import TYPE_CHECKING, Union, Any, List, Optional, Dict, Callable
+from typing import TYPE_CHECKING, Union, Any, List, Optional, Dict, Callable, Tuple, cast
 import importlib, inspect, functools, pathlib, time, re, ctypes
 from tinygrad.dtype import DType, ImageDType
 from tinygrad.helpers import ansilen, DEBUG, getenv, colored, BEAM, NOOPT, all_int, to_function_name, from_mv, flat_mv, diskcache_get, diskcache_put
+from tinygrad.shape.shapetracker import ShapeTracker
 from tinygrad.shape.symbolic import Variable, sym_infer, sint
-from tinygrad.ops import LazyOp, TernaryOps, get_lazyop_info, ReduceOps, BufferOps, BinaryOps, UnaryOps, Op, GlobalCounters
+from tinygrad.ops import LazyOp, TernaryOps, get_lazyop_info, ReduceOps, BufferOps, BinaryOps, UnaryOps, Op, GlobalCounters, MovementOps
 
 if TYPE_CHECKING:
   from tinygrad.codegen.linearizer import Linearizer
@@ -67,8 +68,8 @@ def update_stats(name:str, op_estimate:sint, mem_estimate:int, var_vals: Optiona
 class Buffer:
   def __init__(self, device:str, size:int, dtype:DType, opaque:Any=None):
     assert isinstance(dtype, DType)
-    self.device, self.size, self.dtype = device, size, dtype
-    self.allocator = Device[self.device].allocator
+    self.device, self.size, self.dtype, self.d = device, size, dtype, Device[device]
+    self.allocator = self.d.allocator
     # TODO: image hack shouldn't be here. where should it be?
     self._buf = opaque if opaque is not None else self.allocator.alloc(dtype if isinstance(dtype, ImageDType) else size * dtype.itemsize)
     # TODO: mem_used for all devices
@@ -96,11 +97,15 @@ class Buffer:
     return mv
 
 def _internal_buffer_copy(dest:Buffer, src:Buffer):
-  if hasattr(dest.allocator, 'transfer') and type(dest.allocator) is type(src.allocator):  # noqa: E721
+  if hasattr(src.allocator, 'transfer') and type(dest.allocator) is type(src.allocator):  # noqa: E721
     # fast path, used on HIP between GPUs
-    # NOTE: it's important we use the dest device here to ensure the transfer is ready
-    Device[src.device].synchronize()   # TODO: async this
-    dest.allocator.transfer(dest._buf, src._buf, dest.size*dest.dtype.itemsize)
+    # NOTE: we have to block here so the data isn't copied too early. this is probably due to buffer reuse
+    if hasattr(src.d, "block") and hasattr(dest.d, "event"): src.d.block(dest.d.event())
+    else: dest.d.synchronize()
+    src.allocator.transfer(dest._buf, src._buf, dest.size*dest.dtype.itemsize)
+    # NOTE: we have to block here so the data is ready on dest when dest needs it
+    if hasattr(dest.d, "block") and hasattr(src.d, "event"): dest.d.block(src.d.event())
+    else: src.d.synchronize()
     return
   if getenv("FROM_BUFFER") and hasattr(dest.allocator, 'from_buffer') and hasattr(dest.allocator, 'transfer') and hasattr(src.allocator, 'as_buffer'):
     # fast path, used on Metal in OS X Sonoma
@@ -122,15 +127,14 @@ class _BufferCopy(JITRunner):
   # TODO: make wait work
   def __call__(self, rawbufs:List[Buffer], var_vals:Dict[Variable, int], wait=False, jit=False):
     dest, src = rawbufs
-    assert dest.size == src.size, f"buffer copy size mismatch, {dest.size} != {src.size}"
-    assert dest.dtype == src.dtype, f"buffer copy dtype mismatch, {dest.dtype} != {src.dtype}"
+    assert dest.size == src.size and dest.dtype == src.dtype, f"buffer copy mismatch, {dest.size} != {src.size}, {dest.dtype} != {src.dtype}"
     st = time.perf_counter()
     _internal_buffer_copy(dest, src)
     et = None
     if wait or DEBUG >= 2:
-      Device[dest.device].synchronize()
+      dest.d.synchronize()
       et = time.perf_counter() - st
-    update_stats(colored(f"copy {dest.size:8d}, {dest.device[:7]:>7s} <- {src.device[:7]:7s}", "yellow"),
+    update_stats(colored(f"copy {dest.size*dest.dtype.itemsize:8d}, {dest.device[:7]:>7s} <- {src.device[:7]:7s}", "yellow"),
                  0, dest.size*dest.dtype.itemsize, {}, et, 2, jit, device=dest.device)
 BufferCopy = _BufferCopy()
 
@@ -151,9 +155,8 @@ class LRUAllocator(Allocator):  # pylint: disable=abstract-method
   def __init__(self): self.cache: Dict[sz_type, Any] = defaultdict(list)
   def alloc(self, size:sz_type):
     if len(c := self.cache[size]): return c.pop()
-    try:
-      return super().alloc(size)
-    except MemoryError:
+    try: return super().alloc(size)
+    except (RuntimeError, MemoryError):
       self.free_cache()
       return super().alloc(size)
   def free_cache(self):
@@ -225,7 +228,31 @@ def _get_interpreted_fxn(fxn_for_op:Dict[Op, Callable], ast:LazyOp) -> Interpret
     if ast.op in BufferOps:
       if ast.op == BufferOps.CONST: tmp = f"{gstr(fxn_for_op[ast.op], ast.op)}({gstr(ast.arg.val)}, {gstr(ast.arg.dtype)})"
       else: tmp = f"{gstr(fxn_for_op[UnaryOps.CAST], UnaryOps.CAST)}(inputs[{ast.arg.idx-1}], ({gstr(ast.arg.dtype)}, True))"
-      for mop,arg in ast.arg.st.to_movement_ops(): tmp = f"{gstr(fxn_for_op[mop], mop)}({tmp}, {gstr(arg)})"
+
+      # convert ShapeTracker to MovementOps
+      to_apply:List[Tuple[MovementOps, Tuple]] = []
+      for v in cast(ShapeTracker, ast.arg.st).views:
+        real_shape = tuple(y-x for x,y in v.mask) if v.mask else v.shape
+        real_offset = 0 if 0 in real_shape else (v.offset + (sum(x*st for (x,_),st in zip(v.mask, v.strides)) if v.mask else 0))
+        # first, we apply the offset
+        # then, we make it the correct shape
+        # then, we apply permutations
+        to_apply.append((MovementOps.AS_STRIDED, (tuple([s if st != 0 else 1 for s,st in zip(real_shape, v.strides)]), v.strides, real_offset)))
+        # then, we apply pre expand pads
+        if v.mask is not None:
+          pre_expand_pads = tuple((x,s-y) if st != 0 else (0,0) for (x,y),s,st in zip(v.mask, v.shape, v.strides))
+          post_expand_pads = tuple((x,s-y) if st == 0 else (0,0) for (x,y),s,st in zip(v.mask, v.shape, v.strides))
+          if any(x != (0,0) for x in pre_expand_pads):
+            to_apply.append((MovementOps.PAD, pre_expand_pads))
+            real_shape = tuple(x+s[0]+s[1] for x,s in zip(real_shape, pre_expand_pads))
+        # then, we do any expands
+        # NOTE: this is a good idea even without masks, since torch doesn't support negative strides and has to make a copy
+        if any(s != 1 and st == 0 for s,st in zip(real_shape, v.strides)): to_apply.append((MovementOps.EXPAND, real_shape))
+        # lastly, we apply post expand pads
+        if v.mask is not None and any(x != (0,0) for x in post_expand_pads): to_apply.append((MovementOps.PAD, post_expand_pads))
+
+      # apply those MovementOps
+      for mop,arg in to_apply: tmp = f"{gstr(fxn_for_op[mop], mop)}({tmp}, {gstr(arg)})"
     else:
       tmp = f"{gstr(fxn_for_op[ast.op], ast.op)}({', '.join([_interpret_ast(src) for src in ast.src] + ([gstr(ast.arg)] if ast.arg else []))})"
 
