@@ -122,7 +122,7 @@ jobs:
         ln -s ~/tinygrad/weights/LLaMA weights/LLaMA
         ln -s ~/tinygrad/extra/datasets/cifar-10-python.tar.gz extra/datasets/cifar-10-python.tar.gz
     - name: Run model inference benchmark
-      run: GPU=1 python3 test/external/external_model_benchmark.py
+      run: HIP=1 NOCLANG=1 python3 test/external/external_model_benchmark.py
     - name: Test speed vs torch
       run: BIG=2 TORCHCUDA=1 python3 test/test_speed_v_torch.py | tee torch_speed.txt
     - name: Run Tensor Core GEMM
@@ -139,6 +139,9 @@ jobs:
         HIP=1 JIT=1 python3 examples/gpt2.py --prompt "Hello." --count 10 --temperature 0 --timing | tee gpt2_jitted.txt
     - name: Run 10 CIFAR training steps
       run: STEPS=10 python3 examples/hlb_cifar10.py | tee train_cifar.txt
+    # # TODO: enable this. it took 3 minutes in CI and made the full training one more than 5 minutes
+    # - name: Run 10 CIFAR training steps w HALF and 6 GPUS
+    #   run: time HALF=1 STEPS=10 BS=1536 GPUS=6 python3 examples/hlb_cifar10.py
     - name: Run full CIFAR training w HALF
       run: time HALF=1 STEPS=1000 python3 examples/hlb_cifar10.py | tee train_cifar_half.txt
     # # TODO: make wino faster so we can enable both
