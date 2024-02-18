@@ -5,10 +5,8 @@ import gymnasium as gym
 import models
 import numpy as np
 import utils
-from tinygrad import Tensor, Device
+from tinygrad import Tensor
 import time
-
-Device.DEFAULT = "TORCH"
 
 
 class TestRewardEMA(unittest.TestCase):
