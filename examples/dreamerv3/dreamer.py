@@ -75,6 +75,9 @@ def main():
     logdir = pathlib.Path(config.logdir).expanduser()
     config.traindir = config.traindir or logdir / "train_eps"
     config.evaldir = config.evaldir or logdir / "eval_eps"
+    config.steps //= config.action_repeat
+    config.eval_every //= config.action_repeat
+    config.log_every //= config.action_repeat
 
     print("Logdir", logdir)
     logdir.mkdir(parents=True, exist_ok=True)
