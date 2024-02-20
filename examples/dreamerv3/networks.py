@@ -81,7 +81,7 @@ class ConvEncoder:
         self.layers = layers
 
     def __call__(self, obs: Tensor):
-        obs -= 0.5
+        obs = obs - 0.5
         # (batch, time, h, w, ch) -> (batch * time, h, w, ch)
         x = obs.reshape((-1,) + tuple(obs.shape[-3:]))
         # (batch * time, h, w, ch) -> (batch * time, ch, h, w)
