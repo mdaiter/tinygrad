@@ -12,11 +12,11 @@ from tinygrad import Tensor, nn, dtypes
 
 
 def symlog(x):
-    return Tensor.sign(x) * Tensor.log(Tensor.abs(x) + 1.0)
+    return x.sign() * (x.abs() + 1.0).log()
 
 
 def symexp(x):
-    return Tensor.sign(x) * (Tensor.exp(Tensor.abs(x)) - 1.0)
+    return x.sign() * (x.abs().exp() - 1.0)
 
 
 def cumprod(x: Tensor, axis: int = 0):
@@ -165,7 +165,7 @@ def weight_init(m):
         out_num, in_num = m.weight.shape
         denoms = (in_num + out_num) / 2.0
         scale = 1.0 / denoms
-        std = np.sqrt(scale) / 0.87962566103423978
+        std = float(np.sqrt(scale) / 0.87962566103423978)
         m.weight = Tensor.normal(m.weight.shape, mean=0.0, std=std).clip(-2.0 * std, 2.0 * std)
         if m.bias is not None:
             m.bias = Tensor.zeros_like(m.bias)
@@ -174,7 +174,7 @@ def weight_init(m):
         out_num, in_num = m.weight.shape[:2]
         denoms = (in_num + out_num) * space / 2.0
         scale = 1.0 / denoms
-        std = np.sqrt(scale) / 0.87962566103423978
+        std = float(np.sqrt(scale) / 0.87962566103423978)
         m.weight = Tensor.normal(m.weight.shape, mean=0.0, std=std).clip(-2.0 * std, 2.0 * std)
         if m.bias is not None:
             m.bias = Tensor.zeros_like(m.bias)
@@ -189,7 +189,7 @@ def uniform_weight_init(given_scale):
             out_num, in_num = m.weight.shape
             denoms = (in_num + out_num) / 2.0
             scale = given_scale / denoms
-            limit = np.sqrt(3 * scale)
+            limit = float(np.sqrt(3 * scale))
             m.weight = Tensor.uniform(m.weight.shape, low=-limit, high=limit)
             if m.bias is not None:
                 m.bias = Tensor.zeros_like(m.bias)
@@ -198,7 +198,7 @@ def uniform_weight_init(given_scale):
             out_num, in_num = m.weight.shape[:2]
             denoms = (in_num + out_num) * space / 2.0
             scale = given_scale / denoms
-            limit = np.sqrt(3 * scale)
+            limit = float(np.sqrt(3 * scale))
             m.weight = Tensor.uniform(m.weight.shape, low=-limit, high=limit)
             if m.bias is not None:
                 m.bias = Tensor.zeros_like(m.bias)

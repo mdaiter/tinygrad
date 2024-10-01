@@ -460,28 +460,30 @@ class RSSM:
         utils.uniform_weight_init(1.0)(self._imgs_stat_layer)
 
         if self._initial == "learned":
-            self.W = Tensor.zeros(1, self._deter)
+            self.W = Tensor.zeros(int(1), int(self._deter))
             self.W.requires_grad = True
 
     def initial(self, batch_size):
-        deter = Tensor.zeros(batch_size, self._deter)
+        batch_size = int(batch_size) # for some reason, tinygrad's breaking internally. Gotta cast explicitly here.
+        deter = Tensor.zeros(int(batch_size), int(self._deter))
+        print(f'batch_size, self._stoch, self._discrete: {batch_size}, {self._stoch}, {self._discrete}')
         if self._discrete:
             state = dict(
-                logit=Tensor.zeros([batch_size, self._stoch, self._discrete]),
-                stoch=Tensor.zeros([batch_size, self._stoch, self._discrete]),
+                logit=Tensor.zeros([int(batch_size), int(self._stoch), int(self._discrete)]),
+                stoch=Tensor.zeros([int(batch_size), int(self._stoch), int(self._discrete)]),
                 deter=deter,
             )
         else:
             state = dict(
-                mean=Tensor.zeros([batch_size, self._stoch]),
-                std=Tensor.zeros([batch_size, self._stoch]),
-                stoch=Tensor.zeros([batch_size, self._stoch]),
+                mean=Tensor.zeros([int(batch_size), int(self._stoch)]),
+                std=Tensor.zeros([int(batch_size), int(self._stoch)]),
+                stoch=Tensor.zeros([int(batch_size), int(self._stoch)]),
                 deter=deter,
             )
         if self._initial == "zeros":
             return state
         elif self._initial == "learned":
-            state["deter"] = Tensor.tanh(self.W).repeat((batch_size, 1))
+            state["deter"] = Tensor.tanh(self.W).repeat((int(batch_size), 1))
             state["stoch"] = self.get_stoch(state["deter"])
             return state
         else:
@@ -533,13 +535,13 @@ class RSSM:
         return dist
 
     def obs_step(self, prev_state, prev_action, embed, is_first, sample=True):
-        B = is_first.shape[0]
+        B = float(is_first.shape[0])
         # initialize all prev_state
-        if prev_state is None or Tensor.sum(is_first) == B:
+        if prev_state is None or is_first.sum().numpy() == B:
             prev_state = self.initial(B)
-            prev_action = Tensor.zeros([B, self._num_actions])
+            prev_action = Tensor.zeros([int(B), int(self._num_actions)])
         # overwrite the prev_state only where is_first=True
-        elif Tensor.sum(is_first) > 0:
+        elif is_first.sum().numpy() > 0:
             is_first = is_first[:, None]
             prev_action *= 1.0 - is_first
             init_state = self.initial(B)

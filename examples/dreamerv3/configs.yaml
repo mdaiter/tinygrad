@@ -1,4 +1,4 @@
-logdir: null
+logdir: './log/'
 traindir: null
 evaldir: null
 offline_traindir: ''
@@ -60,7 +60,7 @@ initial: 'learned'
 # Training
 batch_size: 16
 batch_length: 64
-train_ratio: 1032
+train_ratio: 1023
 pretrain: 100
 model_lr: 1e-4
 opt_eps: 1e-8
