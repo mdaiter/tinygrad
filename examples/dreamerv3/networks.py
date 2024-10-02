@@ -465,33 +465,33 @@ class RSSM:
 
     def initial(self, batch_size):
         batch_size = int(batch_size) # for some reason, tinygrad's breaking internally. Gotta cast explicitly here.
-        deter = Tensor.zeros(int(batch_size), int(self._deter))
+        deter = Tensor.zeros(int(batch_size), int(self._deter)).contiguous()
         print(f'batch_size, self._stoch, self._discrete: {batch_size}, {self._stoch}, {self._discrete}')
         if self._discrete:
             state = dict(
-                logit=Tensor.zeros([int(batch_size), int(self._stoch), int(self._discrete)]),
-                stoch=Tensor.zeros([int(batch_size), int(self._stoch), int(self._discrete)]),
+                logit=Tensor.zeros([int(batch_size), int(self._stoch), int(self._discrete)]).contiguous(),
+                stoch=Tensor.zeros([int(batch_size), int(self._stoch), int(self._discrete)]).contiguous(),
                 deter=deter,
             )
         else:
             state = dict(
-                mean=Tensor.zeros([int(batch_size), int(self._stoch)]),
-                std=Tensor.zeros([int(batch_size), int(self._stoch)]),
-                stoch=Tensor.zeros([int(batch_size), int(self._stoch)]),
+                mean=Tensor.zeros([int(batch_size), int(self._stoch)]).contiguous(),
+                std=Tensor.zeros([int(batch_size), int(self._stoch)]).contiguous(),
+                stoch=Tensor.zeros([int(batch_size), int(self._stoch)]).contiguous(),
                 deter=deter,
             )
         if self._initial == "zeros":
             return state
         elif self._initial == "learned":
-            state["deter"] = Tensor.tanh(self.W).repeat((int(batch_size), 1))
-            state["stoch"] = self.get_stoch(state["deter"])
+            state["deter"] = Tensor.tanh(self.W).repeat((int(batch_size), 1)).contiguous()
+            state["stoch"] = self.get_stoch(state["deter"]).contiguous()
             return state
         else:
             raise NotImplementedError(self._initial)
 
     def observe(self, embed, action, is_first, state=None):
         def swap(x):
-            return x.transpose(1, 0)
+            return x.transpose(1, 0).contiguous()
 
         # (batch, time, ch) -> (time, batch, ch)
         embed, action, is_first = swap(embed), swap(action), swap(is_first)
@@ -509,7 +509,7 @@ class RSSM:
 
     def imagine_with_action(self, action, state):
         def swap(x):
-            return x.transpose(1, 0)
+            return x.transpose(1, 0).contiguous()
 
         assert isinstance(state, dict), state
         action = swap(action)

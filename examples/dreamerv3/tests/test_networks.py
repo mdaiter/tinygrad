@@ -193,8 +193,8 @@ class TestRSSM(unittest.TestCase):
         self.assertEqual(prior["deter"].numpy().shape, (B, T, 200))
 
     def test_rssm_observe(self):
-        B = 2
-        T = 4
+        B = int(2)
+        T = int(4)
         rssm = networks.RSSM(num_actions=10, embed=20)
         embed = Tensor.randn(B, T, 20)
         action = Tensor.randn(B, T, 10)
@@ -202,7 +202,7 @@ class TestRSSM(unittest.TestCase):
         post, prior = rssm.observe(embed, action, is_first)
         self.assertEqual(post["stoch"].numpy().shape, (B, T, 30, 30))
         self.assertEqual(post["deter"].numpy().shape, (B, T, 200))
-        is_first = Tensor.zeros(B, T)
+        is_first = Tensor.zeros(B, T).contiguous()
         post, prior = rssm.observe(embed, action, is_first, post)
         self.assertEqual(post["stoch"].numpy().shape, (B, T, 30, 30))
         self.assertEqual(post["deter"].numpy().shape, (B, T, 200))
