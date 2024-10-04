@@ -123,14 +123,12 @@ class WorldModel:
         rep_scale = model._config.rep_scale
         kl_loss, kl_value, dyn_loss, rep_loss = model.dynamics.kl_loss(post, prior, kl_free, dyn_scale, rep_scale)
         kl_loss = kl_loss.contiguous().realize()
-        model.dynamics.realize_gradients()
         assert kl_loss.shape == embed.shape[:2], kl_loss.shape
         preds = {}
         for name, head in model.heads.items():
             grad_head = name in model._config.grad_heads
             feat = model.dynamics.get_feat(post)
             feat = feat if grad_head else feat.detach()
-            model.dynamics.realize_gradients()
             pred = head(feat)
             if isinstance(pred, dict):
                 preds.update(pred)
@@ -141,9 +139,7 @@ class WorldModel:
             loss = -pred.log_prob(data[name])
             assert loss.shape == embed.shape[:2], (name, loss.shape, embed.shape[:2])
             losses[name] = loss
-            model.dynamics.realize_gradients()
         scaled = {key: value * model._scales.get(key, 1.0) for key, value in losses.items()}
-        model.dynamics.realize_gradients()
         print(f'scaled.values(): {scaled.values()}, kl_loss: {kl_loss}')
         model_loss = (sum(scaled.values()).realize() + kl_loss.realize()).mean().contiguous().realize()
         print(f'model_loss realized! not backward. model_loss: {model_loss}')
@@ -206,7 +202,6 @@ class WorldModel:
     def train(self, data):
         with Tensor.train():
             data = self.preprocess(data)
-            self.dynamics.realize_gradients()
             return self._train(self, **data)
 
     @staticmethod

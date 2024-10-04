@@ -497,10 +497,11 @@ class RSSM:
             raise NotImplementedError(self._initial)
 
     def realize_gradients(self):
-        for param in nn.state.get_parameters(self):
-            if param.grad is not None:
-                param.grad = param.grad.contiguous().realize()
-                print(f'param.grad updated!')
+        return None
+        #for param in nn.state.get_parameters(self):
+            #if param.grad is not None:
+                #param.grad = param.grad.contiguous().realize()
+                #print(f'param.grad updated!')
 
     def observe(self, embed, action, is_first, state=None):
         def swap(x):

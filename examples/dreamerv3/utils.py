@@ -288,8 +288,8 @@ class Optimizer:
 
     def step(self):
         print(f'Optimizer.step called with: {self.parameters}')
-        for parameter in self.parameters:
-                parameter = parameter.realize()
+        #for parameter in self.parameters:
+        #        parameter = parameter.realize()
         grad_norm = clip_grad_norm_(self.parameters, self.grad_clip)
         self.opt.step()
         return {f"{self.name}_grad_norm": grad_norm}
