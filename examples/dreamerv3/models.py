@@ -32,6 +32,7 @@ class WorldModel:
         self.num_actions = int(act_space.n) if hasattr(act_space, "n") else act_space.shape[0]
 
         self.encoder = networks.MultiEncoder(shapes, **config.encoder)
+        print(f'WorldModel encoder params: {nn.state.get_parameters(self.encoder)}')
         self.embed_size = self.encoder.outdim
         self.dynamics = networks.RSSM(
             self.num_actions,
@@ -49,12 +50,14 @@ class WorldModel:
             config.unimix_ratio,
             config.initial,
         )
+        print(f'WorldModel RSSM params: {nn.state.get_parameters(self.dynamics)}')
         self.heads = {}
         if config.dyn_discrete:
             feat_size = config.dyn_stoch * config.dyn_discrete + config.dyn_deter
         else:
             feat_size = config.dyn_stoch + config.dyn_deter
         self.heads["decoder"] = networks.MultiDecoder(feat_size, shapes, **config.decoder)
+        print(f'WorldModel self.heads[decoder] params: {nn.state.get_parameters(self.heads["decoder"])}')
         self.heads["reward"] = networks.MLP(
             feat_size,
             (255,) if config.reward_head["dist"] == "symlog_disc" else (),
@@ -66,6 +69,7 @@ class WorldModel:
             outscale=config.reward_head["outscale"],
             name="Reward",
         )
+        print(f'WorldModel self.heads[reward] params: {nn.state.get_parameters(self.heads["reward"])}')
         self.heads["cont"] = networks.MLP(
             feat_size,
             (),
@@ -77,6 +81,7 @@ class WorldModel:
             outscale=config.cont_head["outscale"],
             name="Cont",
         )
+        print(f'WorldModel self.heads[cont] params: {nn.state.get_parameters(self.heads["cont"])}')
         for name in config.grad_heads:
             assert name in self.heads, name
         # other losses are scaled by 1.0.
@@ -112,16 +117,20 @@ class WorldModel:
     def _train(model: "WorldModel", **data):
         embed = model.encoder(data)
         post, prior = model.dynamics.observe(embed, data["action"], data["is_first"])
+        model.dynamics.realize_gradients()
         kl_free = model._config.kl_free
         dyn_scale = model._config.dyn_scale
         rep_scale = model._config.rep_scale
         kl_loss, kl_value, dyn_loss, rep_loss = model.dynamics.kl_loss(post, prior, kl_free, dyn_scale, rep_scale)
+        kl_loss = kl_loss.contiguous().realize()
+        model.dynamics.realize_gradients()
         assert kl_loss.shape == embed.shape[:2], kl_loss.shape
         preds = {}
         for name, head in model.heads.items():
             grad_head = name in model._config.grad_heads
             feat = model.dynamics.get_feat(post)
             feat = feat if grad_head else feat.detach()
+            model.dynamics.realize_gradients()
             pred = head(feat)
             if isinstance(pred, dict):
                 preds.update(pred)
@@ -132,13 +141,49 @@ class WorldModel:
             loss = -pred.log_prob(data[name])
             assert loss.shape == embed.shape[:2], (name, loss.shape, embed.shape[:2])
             losses[name] = loss
+            model.dynamics.realize_gradients()
         scaled = {key: value * model._scales.get(key, 1.0) for key, value in losses.items()}
-        model_loss = (sum(scaled.values()) + kl_loss).mean()
+        model.dynamics.realize_gradients()
+        print(f'scaled.values(): {scaled.values()}, kl_loss: {kl_loss}')
+        model_loss = (sum(scaled.values()).realize() + kl_loss.realize()).mean().contiguous().realize()
+        print(f'model_loss realized! not backward. model_loss: {model_loss}')
         metrics = {}
-        metrics["model_loss"] = model_loss
+        metrics["model_loss"] = model_loss.contiguous().realize()
 
         model.opt.zero_grad()
+        print(f'model.opt.zero_grad called')
         model_loss.backward()
+        print(f'model_loss backward()')
+
+        print(f'Train WorldModel encoder params: {nn.state.get_parameters(model.encoder)}')
+        print(f'WorldModel RSSM params: {nn.state.get_parameters(model.dynamics)}')
+        print(f'WorldModel self.heads[decoder] params: {nn.state.get_parameters(model.heads["decoder"])}')
+        print(f'WorldModel self.heads[reward] params: {nn.state.get_parameters(model.heads["reward"])}')
+        print(f'WorldModel self.heads[cont] params: {nn.state.get_parameters(model.heads["cont"])}')
+
+        """
+        for param in nn.state.get_parameters(model.encoder):
+                if param.grad is not None:
+                        print(f'setting grad for model encoder param: {param}')
+                        param.grad = param.grad.realize()
+        for param in nn.state.get_parameters(model.dynamics):
+                if param.grad is not None:
+                        print(f'setting grad for model dynamics param: {param}')
+                        param.grad = param.grad.realize()
+        for param in nn.state.get_parameters(model.heads["decoder"]):
+                if param.grad is not None:
+                        print(f'setting grad for model.heads[decoder] param: {param}')
+                        param.grad = param.grad.realize()
+        for param in nn.state.get_parameters(model.heads["reward"]):
+                if param.grad is not None:
+                        print(f'setting grad for model.heads[reward] param: {param}')
+                        param.grad = param.grad.realize()
+        for param in nn.state.get_parameters(model.heads["cont"]):
+                if param.grad is not None:
+                        print(f'setting grad for model.heads[cont] param: {param}')
+                        param.grad = param.grad.realize()
+        """
+ 
         metrics.update(model.opt.step())
 
         metrics.update({f"{name}_loss": loss.mean() for name, loss in losses.items()})
@@ -161,22 +206,29 @@ class WorldModel:
     def train(self, data):
         with Tensor.train():
             data = self.preprocess(data)
+            self.dynamics.realize_gradients()
             return self._train(self, **data)
 
     @staticmethod
     @TinyJit
     def _video_pred(model: "WorldModel", **data):
-        embed = model.encoder(data)
+        embed = model.encoder(data)[:6, :5]
 
-        states, _ = model.dynamics.observe(embed[:6, :5], data["action"][:6, :5], data["is_first"][:6, :5])
+        states, _ = model.dynamics.observe(embed, data["action"][:6, :5], data["is_first"][:6, :5])
         recon = model.heads["decoder"](model.dynamics.get_feat(states))["image"].mode[:6]
         init = {k: v[:, -1] for k, v in states.items()}
         prior = model.dynamics.imagine_with_action(data["action"][:6, 5:], init)
-        openl = model.heads["decoder"](model.dynamics.get_feat(prior))["image"].mode
-        model = Tensor.cat(recon[:, :5], openl, dim=1)
+        model_dynamics_get_feat_prior = model.dynamics.get_feat(prior)
+        print(f'model_dynamics_get_feat_prior: {model_dynamics_get_feat_prior}')
+        openl = model.heads["decoder"](model_dynamics_get_feat_prior)["image"].mode
+        openl = openl.realize()
+        for i in range(6):
+                data["image"][i] = data["image"][i].realize()
+        model_out = Tensor.cat(recon[:, :5], openl, dim=1)
         truth = data["image"][:6]
-        error = (model - truth + 1.0) / 2.0
-        return Tensor.cat(truth, model, error, dim=2).realize()
+        error = ((model_out - truth).realize() + 1.0) / 2.0
+        error = error.realize()
+        return Tensor.cat(truth, model_out, error, dim=2).realize()
 
     def video_pred(self, data):
         with Tensor.train(False):
@@ -256,7 +308,7 @@ class ActorCritic:
         metrics.update(mets)
 
         value = actor_critic.value(imag_feat[:-1])
-        target = target.squeeze(-1).transpose().detach()
+        target = target.squeeze(-1).transpose().contiguous().detach()
         # (time, batch, 1), (time, batch, 1) -> (time, batch)
         value_loss = -value.log_prob(target)
         if actor_critic._config.critic["slow_target"]:
@@ -295,7 +347,7 @@ class ActorCritic:
         dynamics = actor_critic._world_model.dynamics
 
         def flatten(x):
-            return x.reshape([-1] + list(x.shape[2:]))
+            return x.reshape([-1] + list(x.shape[2:])).contiguous()
 
         start = {k: flatten(v) for k, v in start.items()}
 
@@ -348,14 +400,21 @@ class ActorCritic:
         if self._config.imag_gradient == "dynamics":
             actor_target = adv
         elif self._config.imag_gradient == "reinforce":
-            actor_target = policy.log_prob(imag_action)[:-1][:, :, None] * (target - self.value(imag_feat[:-1]).mode).detach()
+            print(f'target: {target}')
+            self_value_image_feat_mode = self.value(imag_feat[:-1]).mode
+            print(f'self.value.mode: {self.value(imag_feat[:-1]).mode}')
+            target_self_value_diff = (target.reshape(*(target.shape[:-1])).permute(2,0,1).contiguous().realize() - self_value_image_feat_mode.contiguous().realize()).detach()
+            print(f'target_self_value_diff: {target_self_value_diff}')
+            actor_target = policy.log_prob(imag_action)[:-1][:, :, None] * target_self_value_diff
+            print(f'actor_target: {actor_target}')
         elif self._config.imag_gradient == "both":
-            actor_target = policy.log_prob(imag_action)[:-1][:, :, None] * (target - self.value(imag_feat[:-1]).mode).detach()
+            actor_target = policy.log_prob(imag_action)[:-1][:, :, None] * (target - self.value(imag_feat[:-1]).mode.reshape(target.shape).contiguous().realize()).detach()
             mix = self._config.imag_gradient_mix
             actor_target = mix * target + (1 - mix) * actor_target
             metrics["imag_gradient_mix"] = mix
         else:
             raise NotImplementedError(self._config.imag_gradient)
+        print(f'-weights[:-1]: {-weights[:-1]}, actor_target: {actor_target}')
         actor_loss = -weights[:-1] * actor_target
         return actor_loss, ema_vals, metrics
 
@@ -369,14 +428,15 @@ class ActorCritic:
             self._updates += 1
 
     def train(self, start, objective):
-        self._update_slow_target()
-        imag_feat, imag_state, imag_action = self._imagine(self, **start)
-        imag_feat = imag_feat.detach().contiguous().realize()
-        imag_state = {k: v.detach().contiguous().realize() for k, v in imag_state.items()}
-        imag_action = imag_action.contiguous().realize()
-        imag_reward = objective(imag_feat, imag_state, imag_action).detach().contiguous().realize()
-        weights, self.ema_vals, metrics = self._train(self, imag_feat, imag_action, imag_reward, self.ema_vals, **imag_state)
-        return imag_feat, imag_state, imag_action, weights, metrics
+        with Tensor.train(True):
+            self._update_slow_target()
+            imag_feat, imag_state, imag_action = self._imagine(self, **start)
+            imag_feat = imag_feat.detach().contiguous().realize()
+            imag_state = {k: v.detach().contiguous().realize() for k, v in imag_state.items()}
+            imag_action = imag_action.contiguous().realize()
+            imag_reward = objective(imag_feat, imag_state, imag_action).detach().contiguous().realize()
+            weights, self.ema_vals, metrics = self._train(self, imag_feat, imag_action, imag_reward, self.ema_vals, **imag_state)
+            return imag_feat, imag_state, imag_action, weights, metrics
 
     def actor_parameters(self):
         return nn.state.get_parameters(self.actor)

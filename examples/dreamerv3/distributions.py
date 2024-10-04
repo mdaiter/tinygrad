@@ -77,11 +77,11 @@ class Categorical(Distribution):
         return self.probs.argmax(axis=-1)
 
     def sample(self, sample_shape=()):
-        probs_2d = self.probs.reshape(-1, self._num_events)
+        probs_2d = self.probs.reshape(-1, self._num_events).contiguous()
         samples_2d = Tensor.multinomial(probs_2d, numel(sample_shape), True).T
         output_shape = sample_shape + self._batch_shape
         output_shape = output_shape if len(output_shape) > 0 else (1,)
-        return samples_2d.reshape(output_shape)
+        return samples_2d.reshape(output_shape).contiguous()
 
     def entropy(self):
         p_log_p = self.logits * self.probs

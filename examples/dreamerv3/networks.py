@@ -83,14 +83,14 @@ class ConvEncoder:
     def __call__(self, obs: Tensor):
         obs = obs - 0.5
         # (batch, time, h, w, ch) -> (batch * time, h, w, ch)
-        x = obs.reshape((-1,) + tuple(obs.shape[-3:]))
+        x = obs.reshape((-1,) + tuple(obs.shape[-3:])).contiguous()
         # (batch * time, h, w, ch) -> (batch * time, ch, h, w)
         x = x.permute(0, 3, 1, 2)
         x = x.sequential(self.layers)
         # (batch * time, ...) -> (batch * time, -1)
-        x = x.reshape(x.shape[0], -1)
+        x = x.reshape(x.shape[0], -1).contiguous()
         # (batch * time, -1) -> (batch, time, -1)
-        return x.reshape(obs.shape[:2] + (-1,))
+        return x.reshape(obs.shape[:2] + (-1,)).contiguous()
 
 
 class ConvDecoder:
@@ -143,7 +143,7 @@ class ConvDecoder:
     def __call__(self, features):
         x = self._linear_layer(features)
         # (batch, time, -1) -> (batch * time, h, w, ch)
-        x = x.reshape([-1, self._minres, self._minres, self._embed_size // self._minres**2])
+        x = x.reshape([-1, self._minres, self._minres, self._embed_size // self._minres**2]).contiguous()
         # (batch, time, -1) -> (batch * time, ch, h, w)
         x = x.permute(0, 3, 1, 2)
         x = x.sequential(self.layers)
@@ -323,12 +323,17 @@ class MultiEncoder:
         if self.cnn_shapes:
             cnn_inputs = [obs[k] for k in self.cnn_shapes]
             inputs = Tensor.cat(*cnn_inputs, dim=-1)
+            print(f'MultiEncoder cnn_inputs length: {len(cnn_inputs)}')
+            inputs = inputs.realize()
             outputs.append(self._cnn(inputs))
         if self.mlp_shapes:
             mlp_inputs = [obs[k] for k in self.mlp_shapes]
             inputs = Tensor.cat(*mlp_inputs, dim=-1)
+            print(f'MultiEncoder mlp_inputs length: {len(mlp_inputs)}')
+            inputs = inputs.realize()
             outputs.append(self._mlp(inputs))
-        outputs = Tensor.cat(*outputs, dim=-1)
+        print(f'MultiEncoder outputs length: {len(outputs)}')
+        outputs = Tensor.cat(*outputs, dim=-1).realize()
         return outputs
 
 
@@ -471,27 +476,35 @@ class RSSM:
             state = dict(
                 logit=Tensor.zeros([int(batch_size), int(self._stoch), int(self._discrete)]).contiguous(),
                 stoch=Tensor.zeros([int(batch_size), int(self._stoch), int(self._discrete)]).contiguous(),
-                deter=deter,
+                deter=deter.contiguous(),
             )
         else:
             state = dict(
                 mean=Tensor.zeros([int(batch_size), int(self._stoch)]).contiguous(),
                 std=Tensor.zeros([int(batch_size), int(self._stoch)]).contiguous(),
                 stoch=Tensor.zeros([int(batch_size), int(self._stoch)]).contiguous(),
-                deter=deter,
+                deter=deter.contiguous(),
             )
         if self._initial == "zeros":
             return state
         elif self._initial == "learned":
-            state["deter"] = Tensor.tanh(self.W).repeat((int(batch_size), 1)).contiguous()
+            state["deter"] = Tensor.tanh(self.W.contiguous().realize()).repeat((int(batch_size), 1)).contiguous().realize()
+            if self.W.grad is not None:
+                self.W.grad = self.W.grad.contiguous().realize()
             state["stoch"] = self.get_stoch(state["deter"]).contiguous()
             return state
         else:
             raise NotImplementedError(self._initial)
 
+    def realize_gradients(self):
+        for param in nn.state.get_parameters(self):
+            if param.grad is not None:
+                param.grad = param.grad.contiguous().realize()
+                print(f'param.grad updated!')
+
     def observe(self, embed, action, is_first, state=None):
         def swap(x):
-            return x.transpose(1, 0).contiguous()
+            return x.transpose(1, 0).contiguous().realize()
 
         # (batch, time, ch) -> (time, batch, ch)
         embed, action, is_first = swap(embed), swap(action), swap(is_first)
@@ -505,33 +518,37 @@ class RSSM:
         # (time, batch, stoch, discrete_num) -> (batch, time, stoch, discrete_num)
         post = {k: swap(v) for k, v in post.items()}
         prior = {k: swap(v) for k, v in prior.items()}
+        self.realize_gradients()
         return post, prior
 
     def imagine_with_action(self, action, state):
         def swap(x):
-            return x.transpose(1, 0).contiguous()
+            return x.transpose(1, 0).contiguous().realize()
 
         assert isinstance(state, dict), state
         action = swap(action)
         prior = utils.static_scan(self.img_step, [action], state)
         prior = prior[0]
         prior = {k: swap(v) for k, v in prior.items()}
+        self.realize_gradients()
         return prior
 
     def get_feat(self, state):
         stoch = state["stoch"]
         if self._discrete:
             shape = list(stoch.shape[:-2]) + [self._stoch * self._discrete]
-            stoch = stoch.reshape(shape)
-        return Tensor.cat(stoch, state["deter"], dim=-1)
+            stoch = stoch.reshape(shape).contiguous()
+        self.realize_gradients()
+        return stoch.cat(state["deter"], dim=-1)
 
     def get_dist(self, state, dtype=None):
         if self._discrete:
             logit = state["logit"]
             dist = distributions.Independent(distributions.OneHotCategorical(logit, unimix_ratio=self._unimix_ratio), 1)
         else:
-            mean, std = state["mean"], state["std"]
+            mean, std = state["mean"].contiguous(), state["std"].contiguous()
             dist = distributions.ContDist(distributions.Independent(distributions.Normal(mean, std), 1))
+        self.realize_gradients()
         return dist
 
     def obs_step(self, prev_state, prev_action, embed, is_first, sample=True):
@@ -549,7 +566,7 @@ class RSSM:
                 is_first_r = Tensor.reshape(
                     is_first,
                     is_first.shape + (1,) * (len(val.shape) - len(is_first.shape)),
-                )
+                ).contiguous()
                 prev_state[key] = val * (1.0 - is_first_r) + init_state[key] * is_first_r
 
         prior = self.img_step(prev_state, prev_action)
@@ -562,7 +579,8 @@ class RSSM:
             stoch = self.get_dist(stats).sample()
         else:
             stoch = self.get_dist(stats).mode
-        post = {"stoch": stoch.realize(), "deter": prior["deter"].realize(), **stats}
+        post = {"stoch": stoch.contiguous().realize(), "deter": prior["deter"].realize(), **stats}
+        self.realize_gradients()
         return post, prior
 
     def img_step(self, prev_state, prev_action, sample=True):
@@ -571,7 +589,7 @@ class RSSM:
         if self._discrete:
             shape = list(prev_stoch.shape[:-2]) + [self._stoch * self._discrete]
             # (batch, stoch, discrete_num) -> (batch, stoch * discrete_num)
-            prev_stoch = prev_stoch.reshape(shape)
+            prev_stoch = prev_stoch.reshape(shape).contiguous()
         # (batch, stoch * discrete_num) -> (batch, stoch * discrete_num + action)
         x = Tensor.cat(prev_stoch, prev_action, dim=-1)
         # (batch, stoch * discrete_num + action, embed) -> (batch, hidden)
@@ -589,6 +607,7 @@ class RSSM:
         else:
             stoch = self.get_dist(stats).mode
         prior = {"stoch": stoch, "deter": deter, **stats}
+        self.realize_gradients()
         return prior
 
     def get_stoch(self, deter):
@@ -605,7 +624,7 @@ class RSSM:
                 x = self._obs_stat_layer(x)
             else:
                 raise NotImplementedError
-            logit = x.reshape(list(x.shape[:-1]) + [self._stoch, self._discrete])
+            logit = x.reshape(list(x.shape[:-1]) + [self._stoch, self._discrete]).contiguous()
             return {"logit": logit}
         else:
             if name == "ims":

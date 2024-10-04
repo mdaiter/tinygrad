@@ -34,7 +34,7 @@ def sort(arr: Tensor):
         idx = arr.argmin().realize()
         temp.append(arr[idx])
         arr = Tensor.where(arr == arr[idx], arrmax, arr).realize()
-    return Tensor.stack(temp)
+    return temp[0].stack(*(temp[1:])).realize()
 
 
 def quantile(inp: Tensor, q: Tensor):
@@ -130,31 +130,31 @@ def static_scan(fn, inputs, start):
     for index in indices:
 
         def inp(x):
-            return (_input[x] for _input in inputs)
+            return (_input[x].contiguous() for _input in inputs)
 
         last = fn(last, *inp(index))
         if flag:
             if isinstance(last, dict):
-                outputs = {key: value.unsqueeze(0) for key, value in last.items()}
+                outputs = {key: value.unsqueeze(0).contiguous().realize() for key, value in last.items()}
             else:
                 outputs = []
                 for _last in last:
                     if isinstance(_last, dict):
-                        outputs.append({key: value.unsqueeze(0) for key, value in _last.items()})
+                        outputs.append({key: value.unsqueeze(0).contiguous().realize() for key, value in _last.items()})
                     else:
-                        outputs.append(_last.unsqueeze(0))
+                        outputs.append(_last.unsqueeze(0).contiguous().realize())
             flag = False
         else:
             if isinstance(last, dict):
                 for key in last.keys():
-                    outputs[key] = Tensor.cat(outputs[key], last[key].unsqueeze(0), dim=0)
+                    outputs[key] = Tensor.cat(outputs[key], last[key].unsqueeze(0).contiguous().realize(), dim=0).realize()
             else:
                 for j in range(len(outputs)):
                     if isinstance(last[j], dict):
                         for key in last[j].keys():
-                            outputs[j][key] = Tensor.cat(outputs[j][key], last[j][key].unsqueeze(0), dim=0)
+                            outputs[j][key] = Tensor.cat(outputs[j][key], last[j][key].unsqueeze(0).contiguous().realize(), dim=0).realize()
                     else:
-                        outputs[j] = Tensor.cat(outputs[j], last[j].unsqueeze(0), dim=0)
+                        outputs[j] = Tensor.cat(outputs[j], last[j].unsqueeze(0).contiguous().realize(), dim=0).realize()
     if isinstance(outputs, dict):
         outputs = [outputs]
     return outputs
@@ -249,18 +249,20 @@ def get_act(act):
 
 def clip_grad_norm_(parameters, max_norm):
     grads = [p.grad for p in parameters if p.grad is not None]
+    print(f'grads: {grads}')
     if len(grads) == 0:
-        return Tensor(0.0)
+        return Tensor(0.0).contiguous()
 
     def l2_norm(x):
-        return Tensor.sqrt(Tensor.sum(Tensor.square(x)))
+        return x.square().sum().sqrt()
 
     norms = [l2_norm(g) for g in grads]
-    total_norm = l2_norm(Tensor.stack(norms))
+    total_norm = l2_norm(Tensor.stack(*norms)).contiguous()
+    print('total_norm: {total_norm}')
     clip_coef = max_norm / (total_norm + 1e-6)
-    clip_coef = Tensor.maximum(clip_coef, 1.0)
+    clip_coef = clip_coef.maximum(1.0)
     for g in grads:
-        g *= clip_coef
+        g = (g.contiguous() * clip_coef).realize()
     return total_norm
 
 
@@ -285,6 +287,9 @@ class Optimizer:
         self.opt.zero_grad()
 
     def step(self):
+        print(f'Optimizer.step called with: {self.parameters}')
+        for parameter in self.parameters:
+                parameter = parameter.realize()
         grad_norm = clip_grad_norm_(self.parameters, self.grad_clip)
         self.opt.step()
         return {f"{self.name}_grad_norm": grad_norm}
