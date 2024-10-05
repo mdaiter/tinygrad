@@ -129,7 +129,7 @@ def main():
     # make sure eval will be executed once after config.steps
     while agent._step < config.steps + config.eval_every:
         logger.write()
-        if config.eval_episode_num > 0:
+        if False: #config.eval_episode_num > 0:
             print("Start evaluation.")
             start_time = time.time()
             eval_policy = partial(agent, training=False)

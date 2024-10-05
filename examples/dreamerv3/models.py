@@ -50,14 +50,14 @@ class WorldModel:
             config.unimix_ratio,
             config.initial,
         )
-        print(f'WorldModel RSSM params: {nn.state.get_parameters(self.dynamics)}')
+        #print(f'WorldModel RSSM params: {nn.state.get_parameters(self.dynamics)}')
         self.heads = {}
         if config.dyn_discrete:
             feat_size = config.dyn_stoch * config.dyn_discrete + config.dyn_deter
         else:
             feat_size = config.dyn_stoch + config.dyn_deter
         self.heads["decoder"] = networks.MultiDecoder(feat_size, shapes, **config.decoder)
-        print(f'WorldModel self.heads[decoder] params: {nn.state.get_parameters(self.heads["decoder"])}')
+        #print(f'WorldModel self.heads[decoder] params: {nn.state.get_parameters(self.heads["decoder"])}')
         self.heads["reward"] = networks.MLP(
             feat_size,
             (255,) if config.reward_head["dist"] == "symlog_disc" else (),
@@ -69,7 +69,7 @@ class WorldModel:
             outscale=config.reward_head["outscale"],
             name="Reward",
         )
-        print(f'WorldModel self.heads[reward] params: {nn.state.get_parameters(self.heads["reward"])}')
+        #print(f'WorldModel self.heads[reward] params: {nn.state.get_parameters(self.heads["reward"])}')
         self.heads["cont"] = networks.MLP(
             feat_size,
             (),
@@ -81,7 +81,7 @@ class WorldModel:
             outscale=config.cont_head["outscale"],
             name="Cont",
         )
-        print(f'WorldModel self.heads[cont] params: {nn.state.get_parameters(self.heads["cont"])}')
+        #print(f'WorldModel self.heads[cont] params: {nn.state.get_parameters(self.heads["cont"])}')
         for name in config.grad_heads:
             assert name in self.heads, name
         # other losses are scaled by 1.0.
@@ -117,12 +117,16 @@ class WorldModel:
     def _train(model: "WorldModel", **data):
         embed = model.encoder(data)
         post, prior = model.dynamics.observe(embed, data["action"], data["is_first"])
-        model.dynamics.realize_gradients()
+        print(f'post (before kl_loss): {post}')
+        print(f'prior (before kl_loss): {prior}')
         kl_free = model._config.kl_free
         dyn_scale = model._config.dyn_scale
         rep_scale = model._config.rep_scale
+        print(f'kl_free: {kl_free}')
+        print(f'dyn_scale: {dyn_scale}')
+        print(f'rep_scale: {rep_scale}')
         kl_loss, kl_value, dyn_loss, rep_loss = model.dynamics.kl_loss(post, prior, kl_free, dyn_scale, rep_scale)
-        kl_loss = kl_loss.contiguous().realize()
+        print(f'kl_loss: {kl_loss.numpy()}')
         assert kl_loss.shape == embed.shape[:2], kl_loss.shape
         preds = {}
         for name, head in model.heads.items():
@@ -141,46 +145,18 @@ class WorldModel:
             losses[name] = loss
         scaled = {key: value * model._scales.get(key, 1.0) for key, value in losses.items()}
         print(f'scaled.values(): {scaled.values()}, kl_loss: {kl_loss}')
-        model_loss = (sum(scaled.values()).realize() + kl_loss.realize()).mean().contiguous().realize()
+        model_loss = (sum(scaled.values()) + kl_loss).mean()
         print(f'model_loss realized! not backward. model_loss: {model_loss}')
         metrics = {}
-        metrics["model_loss"] = model_loss.contiguous().realize()
+        metrics["model_loss"] = model_loss
 
         model.opt.zero_grad()
-        print(f'model.opt.zero_grad called')
+        print(f'model.opt.zero_grad called. model_loss: {model_loss.numpy()}')
         model_loss.backward()
-        print(f'model_loss backward()')
+        print(f'model_loss backward() called with model_loss value: {model_loss.numpy()}')
 
-        print(f'Train WorldModel encoder params: {nn.state.get_parameters(model.encoder)}')
-        print(f'WorldModel RSSM params: {nn.state.get_parameters(model.dynamics)}')
-        print(f'WorldModel self.heads[decoder] params: {nn.state.get_parameters(model.heads["decoder"])}')
-        print(f'WorldModel self.heads[reward] params: {nn.state.get_parameters(model.heads["reward"])}')
-        print(f'WorldModel self.heads[cont] params: {nn.state.get_parameters(model.heads["cont"])}')
-
-        """
-        for param in nn.state.get_parameters(model.encoder):
-                if param.grad is not None:
-                        print(f'setting grad for model encoder param: {param}')
-                        param.grad = param.grad.realize()
-        for param in nn.state.get_parameters(model.dynamics):
-                if param.grad is not None:
-                        print(f'setting grad for model dynamics param: {param}')
-                        param.grad = param.grad.realize()
-        for param in nn.state.get_parameters(model.heads["decoder"]):
-                if param.grad is not None:
-                        print(f'setting grad for model.heads[decoder] param: {param}')
-                        param.grad = param.grad.realize()
-        for param in nn.state.get_parameters(model.heads["reward"]):
-                if param.grad is not None:
-                        print(f'setting grad for model.heads[reward] param: {param}')
-                        param.grad = param.grad.realize()
-        for param in nn.state.get_parameters(model.heads["cont"]):
-                if param.grad is not None:
-                        print(f'setting grad for model.heads[cont] param: {param}')
-                        param.grad = param.grad.realize()
-        """
- 
-        metrics.update(model.opt.step())
+        #metrics.update(model.opt.step())
+        model.opt.step()
 
         metrics.update({f"{name}_loss": loss.mean() for name, loss in losses.items()})
         metrics["dyn_loss"] = dyn_loss.mean()
@@ -292,7 +268,9 @@ class ActorCritic:
     @TinyJit
     def _train(actor_critic: "ActorCritic", imag_feat, imag_action, reward, ema_vals, **imag_state):
         metrics = {}
+        print(f'imag_feat: {imag_feat.numpy()}')
         actor_ent = actor_critic.actor(imag_feat).entropy()
+        print(f'actor_ent: {actor_ent.numpy()}')
         # this target is not scaled by ema or sym_log.
         target, weights, base = actor_critic._compute_target(imag_feat, imag_state, reward)
         actor_loss, ema_vals, mets = actor_critic._compute_actor_loss(
@@ -326,6 +304,7 @@ class ActorCritic:
         metrics["value_loss"] = value_loss
 
         actor_critic._actor_opt.zero_grad()
+        print(f'actor_loss: {actor_loss.numpy()}')
         actor_loss.backward()
         metrics.update(actor_critic._actor_opt.step())
 
@@ -342,18 +321,23 @@ class ActorCritic:
         dynamics = actor_critic._world_model.dynamics
 
         def flatten(x):
-            return x.reshape([-1] + list(x.shape[2:])).contiguous()
+            return x.reshape([-1] + list(x.shape[2:]))
 
         start = {k: flatten(v) for k, v in start.items()}
 
         def step(prev, _):
             state, _, _ = prev
+            print(f'step.state: {state["stoch"].numpy()}, {state["deter"].numpy()}, {state["logit"].numpy()}')
             feat = dynamics.get_feat(state)
+            print(f'step.feat: {feat.numpy()}')
             inp = feat.detach()
             action = actor_critic.actor(inp).sample()
+            print(f'step.action: {action.numpy()}')
             succ = dynamics.img_step(state, action)
+            print(f'step.succ: {succ["stoch"].numpy()}, {succ["deter"].numpy()}, {succ["logit"].numpy()}')
             return succ, feat, action
 
+        print(f'Tensor.arange(actor_critic._config.imag_horizon): {Tensor.arange(actor_critic._config.imag_horizon).numpy()}')
         succ, feats, actions = utils.static_scan(step, [Tensor.arange(actor_critic._config.imag_horizon)], (start, None, None))
         states = {k: Tensor.cat(start[k][None], v[:-1], dim=0) for k, v in succ.items()}
 
@@ -395,11 +379,11 @@ class ActorCritic:
         if self._config.imag_gradient == "dynamics":
             actor_target = adv
         elif self._config.imag_gradient == "reinforce":
-            print(f'target: {target}')
+            print(f'target: {target.numpy()}')
             self_value_image_feat_mode = self.value(imag_feat[:-1]).mode
-            print(f'self.value.mode: {self.value(imag_feat[:-1]).mode}')
+            print(f'self.value.mode: {self.value(imag_feat[:-1]).mode.numpy()}')
             target_self_value_diff = (target.reshape(*(target.shape[:-1])).permute(2,0,1).contiguous().realize() - self_value_image_feat_mode.contiguous().realize()).detach()
-            print(f'target_self_value_diff: {target_self_value_diff}')
+            print(f'target_self_value_diff: {target_self_value_diff.numpy()}')
             actor_target = policy.log_prob(imag_action)[:-1][:, :, None] * target_self_value_diff
             print(f'actor_target: {actor_target}')
         elif self._config.imag_gradient == "both":
@@ -423,6 +407,7 @@ class ActorCritic:
             self._updates += 1
 
     def train(self, start, objective):
+        print(f'def train(self, start, objective)')
         with Tensor.train(True):
             self._update_slow_target()
             imag_feat, imag_state, imag_action = self._imagine(self, **start)

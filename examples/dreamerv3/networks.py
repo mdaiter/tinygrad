@@ -323,17 +323,15 @@ class MultiEncoder:
         if self.cnn_shapes:
             cnn_inputs = [obs[k] for k in self.cnn_shapes]
             inputs = Tensor.cat(*cnn_inputs, dim=-1)
-            print(f'MultiEncoder cnn_inputs length: {len(cnn_inputs)}')
-            inputs = inputs.realize()
+            #print(f'MultiEncoder cnn_inputs length: {len(cnn_inputs)}')
             outputs.append(self._cnn(inputs))
         if self.mlp_shapes:
             mlp_inputs = [obs[k] for k in self.mlp_shapes]
             inputs = Tensor.cat(*mlp_inputs, dim=-1)
-            print(f'MultiEncoder mlp_inputs length: {len(mlp_inputs)}')
-            inputs = inputs.realize()
+            #print(f'MultiEncoder mlp_inputs length: {len(mlp_inputs)}')
             outputs.append(self._mlp(inputs))
         print(f'MultiEncoder outputs length: {len(outputs)}')
-        outputs = Tensor.cat(*outputs, dim=-1).realize()
+        outputs = Tensor.cat(*outputs, dim=-1)
         return outputs
 
 
@@ -470,42 +468,33 @@ class RSSM:
 
     def initial(self, batch_size):
         batch_size = int(batch_size) # for some reason, tinygrad's breaking internally. Gotta cast explicitly here.
-        deter = Tensor.zeros(int(batch_size), int(self._deter)).contiguous()
+        deter = Tensor.zeros(int(batch_size), int(self._deter))
         print(f'batch_size, self._stoch, self._discrete: {batch_size}, {self._stoch}, {self._discrete}')
         if self._discrete:
             state = dict(
-                logit=Tensor.zeros([int(batch_size), int(self._stoch), int(self._discrete)]).contiguous(),
-                stoch=Tensor.zeros([int(batch_size), int(self._stoch), int(self._discrete)]).contiguous(),
-                deter=deter.contiguous(),
+                logit=Tensor.zeros([int(batch_size), int(self._stoch), int(self._discrete)]),
+                stoch=Tensor.zeros([int(batch_size), int(self._stoch), int(self._discrete)]),
+                deter=deter,
             )
         else:
             state = dict(
-                mean=Tensor.zeros([int(batch_size), int(self._stoch)]).contiguous(),
-                std=Tensor.zeros([int(batch_size), int(self._stoch)]).contiguous(),
-                stoch=Tensor.zeros([int(batch_size), int(self._stoch)]).contiguous(),
-                deter=deter.contiguous(),
+                mean=Tensor.zeros([int(batch_size), int(self._stoch)]),
+                std=Tensor.zeros([int(batch_size), int(self._stoch)]),
+                stoch=Tensor.zeros([int(batch_size), int(self._stoch)]),
+                deter=deter,
             )
         if self._initial == "zeros":
             return state
         elif self._initial == "learned":
-            state["deter"] = Tensor.tanh(self.W.contiguous().realize()).repeat((int(batch_size), 1)).contiguous().realize()
-            if self.W.grad is not None:
-                self.W.grad = self.W.grad.contiguous().realize()
-            state["stoch"] = self.get_stoch(state["deter"]).contiguous()
+            state["deter"] = Tensor.tanh(self.W).repeat((int(batch_size), 1))
+            state["stoch"] = self.get_stoch(state["deter"])
             return state
         else:
             raise NotImplementedError(self._initial)
 
-    def realize_gradients(self):
-        return None
-        #for param in nn.state.get_parameters(self):
-            #if param.grad is not None:
-                #param.grad = param.grad.contiguous().realize()
-                #print(f'param.grad updated!')
-
     def observe(self, embed, action, is_first, state=None):
         def swap(x):
-            return x.transpose(1, 0).contiguous().realize()
+            return x.transpose(1, 0)
 
         # (batch, time, ch) -> (time, batch, ch)
         embed, action, is_first = swap(embed), swap(action), swap(is_first)
@@ -519,28 +508,25 @@ class RSSM:
         # (time, batch, stoch, discrete_num) -> (batch, time, stoch, discrete_num)
         post = {k: swap(v) for k, v in post.items()}
         prior = {k: swap(v) for k, v in prior.items()}
-        self.realize_gradients()
         return post, prior
 
     def imagine_with_action(self, action, state):
         def swap(x):
-            return x.transpose(1, 0).contiguous().realize()
+            return x.transpose(1, 0)
 
         assert isinstance(state, dict), state
         action = swap(action)
         prior = utils.static_scan(self.img_step, [action], state)
         prior = prior[0]
         prior = {k: swap(v) for k, v in prior.items()}
-        self.realize_gradients()
         return prior
 
     def get_feat(self, state):
         stoch = state["stoch"]
         if self._discrete:
             shape = list(stoch.shape[:-2]) + [self._stoch * self._discrete]
-            stoch = stoch.reshape(shape).contiguous()
-        self.realize_gradients()
-        return stoch.cat(state["deter"], dim=-1)
+            stoch = stoch.reshape(shape)
+        return Tensor.cat(stoch, state["deter"], dim=-1)
 
     def get_dist(self, state, dtype=None):
         if self._discrete:
@@ -549,17 +535,18 @@ class RSSM:
         else:
             mean, std = state["mean"].contiguous(), state["std"].contiguous()
             dist = distributions.ContDist(distributions.Independent(distributions.Normal(mean, std), 1))
-        self.realize_gradients()
         return dist
 
     def obs_step(self, prev_state, prev_action, embed, is_first, sample=True):
-        B = float(is_first.shape[0])
+        B = is_first.shape[0]
+        print(f'B: {B}')
         # initialize all prev_state
-        if prev_state is None or is_first.sum().numpy() == B:
+        is_first_sum = is_first.sum().numpy()
+        if prev_state is None or is_first_sum == B:
             prev_state = self.initial(B)
-            prev_action = Tensor.zeros([int(B), int(self._num_actions)])
+            prev_action = Tensor.zeros([B, self._num_actions])
         # overwrite the prev_state only where is_first=True
-        elif is_first.sum().numpy() > 0:
+        elif is_first_sum > 0:
             is_first = is_first[:, None]
             prev_action *= 1.0 - is_first
             init_state = self.initial(B)
@@ -567,9 +554,10 @@ class RSSM:
                 is_first_r = Tensor.reshape(
                     is_first,
                     is_first.shape + (1,) * (len(val.shape) - len(is_first.shape)),
-                ).contiguous()
+                )
                 prev_state[key] = val * (1.0 - is_first_r) + init_state[key] * is_first_r
 
+        print(f'dipping into self.img_step(prev_state, prev_action) now')
         prior = self.img_step(prev_state, prev_action)
         x = Tensor.cat(prior["deter"], embed, dim=-1)
         # (batch_size, prior_deter + embed) -> (batch_size, hidden)
@@ -581,7 +569,6 @@ class RSSM:
         else:
             stoch = self.get_dist(stats).mode
         post = {"stoch": stoch.contiguous().realize(), "deter": prior["deter"].realize(), **stats}
-        self.realize_gradients()
         return post, prior
 
     def img_step(self, prev_state, prev_action, sample=True):
@@ -590,25 +577,36 @@ class RSSM:
         if self._discrete:
             shape = list(prev_stoch.shape[:-2]) + [self._stoch * self._discrete]
             # (batch, stoch, discrete_num) -> (batch, stoch * discrete_num)
-            prev_stoch = prev_stoch.reshape(shape).contiguous()
+            prev_stoch = prev_stoch.reshape(shape)
         # (batch, stoch * discrete_num) -> (batch, stoch * discrete_num + action)
+        print(f'img_step.prev_stoch: {prev_stoch.numpy()}, prev_action: {prev_action.numpy()}')
         x = Tensor.cat(prev_stoch, prev_action, dim=-1)
+        print(f'img_step.x (right after Tensor.cat): {x.numpy()}')
         # (batch, stoch * discrete_num + action, embed) -> (batch, hidden)
+        for layer in self._img_in_layers:
+            for param in nn.state.get_parameters(layer):
+                print(f'img_step.param: {param.numpy()}')
         x = x.sequential(self._img_in_layers)
+        print(f'img_step.x (right after x.sequential(self._img_in_layers)): {x.numpy()}')
+        print(f'self._rec_depth: {self._rec_depth}')
         for _ in range(self._rec_depth):  # rec depth is not correctly implemented
             deter = prev_state["deter"]
+            print(f'img_step.deter (right after deter = prev_state["deter"]): {deter.numpy()}')
             # (batch, hidden), (batch, deter) -> (batch, deter), (batch, deter)
             x, deter = self._cell(x, deter)
+            print(f'img_step.deter (right after x, deter = self._cell(x, deter)): {deter.numpy()}')
+            print(f'img_step.x (right after x, deter = self._cell(x, deter)): {x.numpy()}')
         # (batch, deter) -> (batch, hidden)
         x = x.sequential(self._img_out_layers)
+        print(f'img_step.x (right after x.sequential(self._img_out_layers)): {x.numpy()}')
         # (batch, hidden) -> (batch_size, stoch, discrete_num)
         stats = self._suff_stats_layer("ims", x)
+        print(f'img_step.stats: {stats["logit"].numpy()}')
         if sample:
             stoch = self.get_dist(stats).sample()
         else:
             stoch = self.get_dist(stats).mode
         prior = {"stoch": stoch, "deter": deter, **stats}
-        self.realize_gradients()
         return prior
 
     def get_stoch(self, deter):

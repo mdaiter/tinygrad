@@ -11,13 +11,11 @@ from tensorboardX import SummaryWriter
 from tinygrad import Tensor, nn, dtypes
 
 
-def symlog(x):
-    return x.sign() * (x.abs() + 1.0).log()
+def symlog(x:Tensor) -> Tensor:
+    return Tensor.sign(x) * Tensor.log(Tensor.abs(x) + 1.0)
 
-
-def symexp(x):
-    return x.sign() * (x.abs().exp() - 1.0)
-
+def symexp(x:Tensor) -> Tensor:
+    return Tensor.sign(x) * (Tensor.exp(Tensor.abs(x)) - 1.0)
 
 def cumprod(x: Tensor, axis: int = 0):
     dtype = x.dtype
@@ -135,26 +133,26 @@ def static_scan(fn, inputs, start):
         last = fn(last, *inp(index))
         if flag:
             if isinstance(last, dict):
-                outputs = {key: value.unsqueeze(0).contiguous().realize() for key, value in last.items()}
+                outputs = {key: value.unsqueeze(0) for key, value in last.items()}
             else:
                 outputs = []
                 for _last in last:
                     if isinstance(_last, dict):
-                        outputs.append({key: value.unsqueeze(0).contiguous().realize() for key, value in _last.items()})
+                        outputs.append({key: value.unsqueeze(0) for key, value in _last.items()})
                     else:
-                        outputs.append(_last.unsqueeze(0).contiguous().realize())
+                        outputs.append(_last.unsqueeze(0))
             flag = False
         else:
             if isinstance(last, dict):
                 for key in last.keys():
-                    outputs[key] = Tensor.cat(outputs[key], last[key].unsqueeze(0).contiguous().realize(), dim=0).realize()
+                    outputs[key] = Tensor.cat(outputs[key], last[key].unsqueeze(0), dim=0).realize()
             else:
                 for j in range(len(outputs)):
                     if isinstance(last[j], dict):
                         for key in last[j].keys():
-                            outputs[j][key] = Tensor.cat(outputs[j][key], last[j][key].unsqueeze(0).contiguous().realize(), dim=0).realize()
+                            outputs[j][key] = Tensor.cat(outputs[j][key], last[j][key].unsqueeze(0), dim=0).realize()
                     else:
-                        outputs[j] = Tensor.cat(outputs[j], last[j].unsqueeze(0).contiguous().realize(), dim=0).realize()
+                        outputs[j] = Tensor.cat(outputs[j], last[j].unsqueeze(0), dim=0).realize()
     if isinstance(outputs, dict):
         outputs = [outputs]
     return outputs
@@ -167,8 +165,10 @@ def weight_init(m):
         scale = 1.0 / denoms
         std = float(np.sqrt(scale) / 0.87962566103423978)
         m.weight = Tensor.normal(m.weight.shape, mean=0.0, std=std).clip(-2.0 * std, 2.0 * std)
+        print(f'utils.weight_init: m_weight: {m.weight.numpy()}')
         if m.bias is not None:
             m.bias = Tensor.zeros_like(m.bias)
+            print(f'utils.weight_init: m_bias: {m.bias.numpy()}')
     elif isinstance(m, nn.Conv2d) or isinstance(m, nn.ConvTranspose2d):
         space = m.kernel_size[0] * m.kernel_size[1]
         out_num, in_num = m.weight.shape[:2]
@@ -249,20 +249,26 @@ def get_act(act):
 
 def clip_grad_norm_(parameters, max_norm):
     grads = [p.grad for p in parameters if p.grad is not None]
-    print(f'grads: {grads}')
+    print(f'grads: {[grad.shape for grad in grads]}')
     if len(grads) == 0:
         return Tensor(0.0).contiguous()
 
-    def l2_norm(x):
+    def l2_norm(x: Tensor) -> Tensor:
         return x.square().sum().sqrt()
 
-    norms = [l2_norm(g) for g in grads]
-    total_norm = l2_norm(Tensor.stack(*norms)).contiguous()
-    print('total_norm: {total_norm}')
+    norms = [g.detach().square().sum().sqrt() for g in grads]
+    print(f'norm.shape: {[norm.shape for norm in norms]}')
+    total_norm = l2_norm(Tensor.stack(*norms))
+    print(f'total_norm.shape: {total_norm.shape}')
+    print(f'max_norm: {max_norm}')
     clip_coef = max_norm / (total_norm + 1e-6)
     clip_coef = clip_coef.maximum(1.0)
+    print(f'clip_coef.shape: {clip_coef.shape}')
     for g in grads:
-        g = (g.contiguous() * clip_coef).realize()
+        print(f'old g.shape: {g.shape}')
+        g.assign(g.detach() * clip_coef) # .realize()
+        print(f'new g.shape: {g.shape}')
+        #print(f'for g in grads print loop: {g}, {clip_coef}') # {g.numpy()}, {clip_coef.numpy()}')
     return total_norm
 
 
@@ -287,12 +293,9 @@ class Optimizer:
         self.opt.zero_grad()
 
     def step(self):
-        print(f'Optimizer.step called with: {self.parameters}')
-        #for parameter in self.parameters:
-        #        parameter = parameter.realize()
         grad_norm = clip_grad_norm_(self.parameters, self.grad_clip)
         self.opt.step()
-        return {f"{self.name}_grad_norm": grad_norm}
+        #return {f"{self.name}_grad_norm": grad_norm}
 
 
 def load_config():
@@ -343,6 +346,8 @@ class Logger:
         for name, value in self._videos.items():
             name = name if isinstance(name, str) else name.decode("utf-8")
             if np.issubdtype(value.dtype, np.floating):
+                if np.isnan(value):
+                    print('Found a nan while loading!')
                 value = np.clip(255 * value, 0, 255).astype(np.uint8)
             B, T, H, W, C = value.shape
             value = value.transpose(1, 4, 2, 0, 3).reshape((1, T, C, H, B * W))
